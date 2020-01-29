@@ -2,253 +2,195 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:meta/meta.dart';
 
+import 'backdrop.dart';
+import 'category.dart';
+import 'category_tile.dart';
 import 'unit.dart';
+import 'unit_converter.dart';
 
-const _padding = EdgeInsets.all(16.0);
-
-/// [ConverterRoute] where users can input amounts to convert in one [Unit]
-/// and retrieve the conversion in another [Unit] for a specific [Category].
+/// Loads in unit conversion data, and displays the data.
 ///
-/// While it is named ConverterRoute, a more apt name would be ConverterScreen,
+/// This is the main screen to our app. It retrieves conversion data from a
+/// JSON asset and from an API. It displays the [Categories] in the back panel
+/// of a [Backdrop] widget and shows the [UnitConverter] in the front panel.
+///
+/// While it is named CategoryRoute, a more apt name would be CategoryScreen,
 /// because it is responsible for the UI at the route's destination.
-class ConverterRoute extends StatefulWidget {
-  /// Color for this [Category].
-  final Color color;
-
-  /// Units for this [Category].
-  final List<Unit> units;
-
-  /// This [ConverterRoute] requires the color and units to not be null.
-  const ConverterRoute({
-    @required this.color,
-    @required this.units,
-  })  : assert(color != null),
-        assert(units != null);
+class CategoryRoute extends StatefulWidget {
+  const CategoryRoute();
 
   @override
-  _ConverterRouteState createState() => _ConverterRouteState();
+  _CategoryRouteState createState() => _CategoryRouteState();
 }
 
-class _ConverterRouteState extends State<ConverterRoute> {
-  Unit _fromValue;
-  Unit _toValue;
-  double _inputValue;
-  String _convertedValue = '';
-  List<DropdownMenuItem> _unitMenuItems;
-  bool _showValidationError = false;
+class _CategoryRouteState extends State<CategoryRoute> {
+  Category _defaultCategory;
+  Category _currentCategory;
+  // Widgets are supposed to be deeply immutable objects. We can update and edit
+  // _categories as we build our app, and when we pass it into a widget's
+  // `children` property, we call .toList() on it.
+  // For more details, see https://github.com/dart-lang/sdk/issues/27755
+  final _categories = <Category>[];
+  static const _baseColors = <ColorSwatch>[
+    ColorSwatch(0xFF6AB7A8, {
+      'highlight': Color(0xFF6AB7A8),
+      'splash': Color(0xFF0ABC9B),
+    }),
+    ColorSwatch(0xFFFFD28E, {
+      'highlight': Color(0xFFFFD28E),
+      'splash': Color(0xFFFFA41C),
+    }),
+    ColorSwatch(0xFFFFB7DE, {
+      'highlight': Color(0xFFFFB7DE),
+      'splash': Color(0xFFF94CBF),
+    }),
+    ColorSwatch(0xFF8899A8, {
+      'highlight': Color(0xFF8899A8),
+      'splash': Color(0xFFA9CAE8),
+    }),
+    ColorSwatch(0xFFEAD37E, {
+      'highlight': Color(0xFFEAD37E),
+      'splash': Color(0xFFFFE070),
+    }),
+    ColorSwatch(0xFF81A56F, {
+      'highlight': Color(0xFF81A56F),
+      'splash': Color(0xFF7CC159),
+    }),
+    ColorSwatch(0xFFD7C0E2, {
+      'highlight': Color(0xFFD7C0E2),
+      'splash': Color(0xFFCA90E5),
+    }),
+    ColorSwatch(0xFFCE9A9A, {
+      'highlight': Color(0xFFCE9A9A),
+      'splash': Color(0xFFF94D56),
+      'error': Color(0xFF912D2D),
+    }),
+  ];
+  static const _icons = <String>[
+    'assets/icons/length.png',
+    'assets/icons/area.png',
+    'assets/icons/volume.png',
+    'assets/icons/mass.png',
+    'assets/icons/time.png',
+    'assets/icons/digital_storage.png',
+    'assets/icons/power.png',
+    'assets/icons/currency.png',
+  ];
 
   @override
-  void initState() {
-    super.initState();
-    _createDropdownMenuItems();
-    _setDefaults();
-  }
-
-  /// Creates fresh list of [DropdownMenuItem] widgets, given a list of [Unit]s.
-  void _createDropdownMenuItems() {
-    var newItems = <DropdownMenuItem>[];
-    for (var unit in widget.units) {
-      newItems.add(DropdownMenuItem(
-        value: unit.name,
-        child: Container(
-          child: Text(
-            unit.name,
-            softWrap: true,
-          ),
-        ),
-      ));
+  Future<void> didChangeDependencies() async {
+    super.didChangeDependencies();
+    // We have static unit conversions located in our
+    // assets/data/regular_units.json
+    if (_categories.isEmpty) {
+      await _retrieveLocalCategories();
     }
-    setState(() {
-      _unitMenuItems = newItems;
-    });
   }
 
-  /// Sets the default values for the 'from' and 'to' [Dropdown]s.
-  void _setDefaults() {
-    setState(() {
-      _fromValue = widget.units[0];
-      _toValue = widget.units[1];
-    });
-  }
-
-  /// Clean up conversion; trim trailing zeros, e.g. 5.500 -> 5.5, 10.0 -> 10
-  String _format(double conversion) {
-    var outputNum = conversion.toStringAsPrecision(7);
-    if (outputNum.contains('.') && outputNum.endsWith('0')) {
-      var i = outputNum.length - 1;
-      while (outputNum[i] == '0') {
-        i -= 1;
-      }
-      outputNum = outputNum.substring(0, i + 1);
+  /// Retrieves a list of [Categories] and their [Unit]s
+  Future<void> _retrieveLocalCategories() async {
+    // Consider omitting the types for local variables. For more details on Effective
+    // Dart Usage, see https://www.dartlang.org/guides/language/effective-dart/usage
+    final json = DefaultAssetBundle.of(context)
+        .loadString('assets/data/regular_units.json');
+    final data = JsonDecoder().convert(await json);
+    if (data is! Map) {
+      throw ('Data retrieved from API is not a Map');
     }
-    if (outputNum.endsWith('.')) {
-      return outputNum.substring(0, outputNum.length - 1);
-    }
-    return outputNum;
-  }
+    var categoryIndex = 0;
+    data.keys.forEach((key) {
+      final List<Unit> units =
+          data[key].map<Unit>((dynamic data) => Unit.fromJson(data)).toList();
 
-  void _updateConversion() {
-    setState(() {
-      _convertedValue =
-          _format(_inputValue * (_toValue.conversion / _fromValue.conversion));
-    });
-  }
-
-  void _updateInputValue(String input) {
-    setState(() {
-      if (input == null || input.isEmpty) {
-        _convertedValue = '';
-      } else {
-        // Even though we are using the numerical keyboard, we still have to check
-        // for non-numerical input such as '5..0' or '6 -3'
-        try {
-          final inputDouble = double.parse(input);
-          _showValidationError = false;
-          _inputValue = inputDouble;
-          _updateConversion();
-        } on Exception catch (e) {
-          print('Error: $e');
-          _showValidationError = true;
+      var category = Category(
+        name: key,
+        units: units,
+        color: _baseColors[categoryIndex],
+        iconLocation: _icons[categoryIndex],
+      );
+      setState(() {
+        if (categoryIndex == 0) {
+          _defaultCategory = category;
         }
-      }
+        _categories.add(category);
+      });
+      categoryIndex += 1;
     });
   }
 
-  Unit _getUnit(String unitName) {
-    return widget.units.firstWhere(
-      (Unit unit) {
-        return unit.name == unitName;
-      },
-      orElse: null,
-    );
-  }
-
-  void _updateFromConversion(dynamic unitName) {
+  /// Function to call when a [Category] is tapped.
+  void _onCategoryTap(Category category) {
     setState(() {
-      _fromValue = _getUnit(unitName);
+      _currentCategory = category;
     });
-    if (_inputValue != null) {
-      _updateConversion();
-    }
   }
 
-  void _updateToConversion(dynamic unitName) {
-    setState(() {
-      _toValue = _getUnit(unitName);
-    });
-    if (_inputValue != null) {
-      _updateConversion();
+  /// Makes the correct number of rows for the list view, based on whether the
+  /// device is portrait or landscape.
+  ///
+  /// For portrait, we use a [ListView]. For landscape, we use a [GridView].
+  Widget _buildCategoryWidgets(Orientation deviceOrientation) {
+    if (deviceOrientation == Orientation.portrait) {
+      return ListView.builder(
+        itemBuilder: (BuildContext context, int index) {
+          return CategoryTile(
+            category: _categories[index],
+            onTap: _onCategoryTap,
+          );
+        },
+        itemCount: _categories.length,
+      );
+    } else {
+      return GridView.count(
+        crossAxisCount: 2,
+        childAspectRatio: 3.0,
+        children: _categories.map((Category c) {
+          return CategoryTile(
+            category: c,
+            onTap: _onCategoryTap,
+          );
+        }).toList(),
+      );
     }
-  }
-
-  Widget _createDropdown(String currentValue, ValueChanged<dynamic> onChanged) {
-    return Container(
-      margin: EdgeInsets.only(top: 16.0),
-      decoration: BoxDecoration(
-        // This sets the color of the [DropdownButton] itself
-        color: Colors.grey[50],
-        border: Border.all(
-          color: Colors.grey[400],
-          width: 1.0,
-        ),
-      ),
-      padding: EdgeInsets.symmetric(vertical: 8.0),
-      child: Theme(
-        // This sets the color of the [DropdownMenuItem]
-        data: Theme.of(context).copyWith(
-          canvasColor: Colors.grey[50],
-        ),
-        child: DropdownButtonHideUnderline(
-          child: ButtonTheme(
-            alignedDropdown: true,
-            child: DropdownButton(
-              value: currentValue,
-              items: _unitMenuItems,
-              onChanged: onChanged,
-              style: Theme.of(context).textTheme.title,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final input = Padding(
-      padding: _padding,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // This is the widget that accepts text input. In this case, it
-          // accepts numbers and calls the onChanged property on update.
-          // You can read more about it here: https://flutter.io/text-input
-          TextField(
-            style: Theme.of(context).textTheme.display1,
-            decoration: InputDecoration(
-              labelStyle: Theme.of(context).textTheme.display1,
-              errorText: _showValidationError ? 'Invalid number entered' : null,
-              labelText: 'Input',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(0.0),
-              ),
-            ),
-            // Since we only want numerical input, we use a number keyboard. There
-            // are also other keyboards for dates, emails, phone numbers, etc.
-            keyboardType: TextInputType.number,
-            onChanged: _updateInputValue,
-          ),
-          _createDropdown(_fromValue.name, _updateFromConversion),
-        ],
+    if (_categories.isEmpty) {
+      return Center(
+        child: Container(
+          height: 180.0,
+          width: 180.0,
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    // Based on the device size, figure out how to best lay out the list
+    // You can also use MediaQuery.of(context).size to calculate the orientation
+    assert(debugCheckHasMediaQuery(context));
+    final listView = Padding(
+      padding: EdgeInsets.only(
+        left: 8.0,
+        right: 8.0,
+        bottom: 48.0,
       ),
+      child: _buildCategoryWidgets(MediaQuery.of(context).orientation),
     );
-
-    final arrows = RotatedBox(
-      quarterTurns: 1,
-      child: Icon(
-        Icons.compare_arrows,
-        size: 40.0,
-      ),
-    );
-
-    final output = Padding(
-      padding: _padding,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InputDecorator(
-            child: Text(
-              _convertedValue,
-              style: Theme.of(context).textTheme.display1,
-            ),
-            decoration: InputDecoration(
-              labelText: 'Output',
-              labelStyle: Theme.of(context).textTheme.display1,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(0.0),
-              ),
-            ),
-          ),
-          _createDropdown(_toValue.name, _updateToConversion),
-        ],
-      ),
-    );
-
-    final converter = Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        input,
-        arrows,
-        output,
-      ],
-    );
-
-    return Padding(
-      padding: _padding,
-      child: converter,
+    return Backdrop(
+      currentCategory:
+          _currentCategory == null ? _defaultCategory : _currentCategory,
+      frontPanel: _currentCategory == null
+          ? UnitConverter(category: _defaultCategory)
+          : UnitConverter(category: _currentCategory),
+      backPanel: listView,
+      frontTitle: Text('Unit Converter'),
+      backTitle: Text('Select a Category'),
     );
   }
 }
